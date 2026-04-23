@@ -69,8 +69,9 @@ function renderAttributeInput(
     return (
       <select value={currentValue} onChange={(event) => onAttributeChange(attribute.id, event.target.value)}>
         <option value="">Selecione</option>
-        <option value="true">Sim</option>
-        <option value="false">Nao</option>
+        {/* O Mercado Livre exige os textos "Sim" e "Não" para atributos booleanos no Brasil */}
+        <option value="Sim">Sim</option>
+        <option value="Não">Não</option>
       </select>
     );
   }
@@ -99,7 +100,6 @@ function renderAttributeInput(
     );
   }
 
-  // AQUI OCORREU A MUDANÇA: Substituído o <select> restrito por um <input> com <datalist>
   if (attribute.values.length > 0 && attribute.values.length <= 100) {
     const listId = `datalist-${attribute.id}`;
     return (
