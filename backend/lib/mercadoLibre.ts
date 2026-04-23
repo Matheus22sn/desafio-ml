@@ -1,8 +1,15 @@
-import axios, { AxiosRequestConfig } from 'axios';
+import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 import Token, { IToken } from '../models/token';
 
 const ML_API_BASE_URL = 'https://api.mercadolibre.com';
 const TOKEN_REFRESH_THRESHOLD_MS = 60_000;
+const MAX_TRANSIENT_RETRIES = 2;
+const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504]);
+
+type OAuthStatePayload = {
+  frontendUrl?: string;
+  sessionId?: string;
+};
 
 export class HttpError extends Error {
   status: number;
@@ -90,8 +97,51 @@ export const toHttpError = (
   return new HttpError(500, fallbackMessage);
 };
 
-const getStoredToken = async (): Promise<IToken> => {
-  const token = await Token.findOne().sort({ updatedAt: -1 });
+const delay = async (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const shouldRetryRequest = (error: AxiosError, attempt: number): boolean => {
+  if (attempt >= MAX_TRANSIENT_RETRIES) {
+    return false;
+  }
+
+  const status = error.response?.status;
+
+  if (status && RETRYABLE_STATUS_CODES.has(status)) {
+    return true;
+  }
+
+  return !status;
+};
+
+const requestWithRetry = async <T>(
+  requestFactory: () => Promise<T>,
+  attempt = 0
+): Promise<T> => {
+  try {
+    return await requestFactory();
+  } catch (error) {
+    if (axios.isAxiosError(error) && shouldRetryRequest(error, attempt)) {
+      const retryAfterHeader = error.response?.headers?.['retry-after'];
+      const retryDelay =
+        typeof retryAfterHeader === 'string' && Number.isFinite(Number(retryAfterHeader))
+          ? Number(retryAfterHeader) * 1000
+          : 400 * 2 ** attempt;
+
+      await delay(retryDelay);
+      return requestWithRetry(requestFactory, attempt + 1);
+    }
+
+    throw error;
+  }
+};
+
+const getStoredToken = async (userId?: string): Promise<IToken> => {
+  const token = userId
+    ? await Token.findOne({ user_id: userId })
+    : await Token.findOne().sort({ updatedAt: -1 });
 
   if (!token) {
     throw new HttpError(401, 'Authenticate a seller account before using Mercado Livre features.');
@@ -145,12 +195,14 @@ export const exchangeAuthCode = async (code: string): Promise<IToken> => {
       redirect_uri: requireEnv('ML_REDIRECT_URI'),
     });
 
-    const response = await axios.post(`${ML_API_BASE_URL}/oauth/token`, payload.toString(), {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
+    const response = await requestWithRetry(() =>
+      axios.post(`${ML_API_BASE_URL}/oauth/token`, payload.toString(), {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      })
+    );
 
     return persistToken(response.data);
   } catch (error) {
@@ -167,12 +219,14 @@ export const refreshAccessToken = async (token: IToken): Promise<IToken> => {
       refresh_token: token.refresh_token,
     });
 
-    const response = await axios.post(`${ML_API_BASE_URL}/oauth/token`, payload.toString(), {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
+    const response = await requestWithRetry(() =>
+      axios.post(`${ML_API_BASE_URL}/oauth/token`, payload.toString(), {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      })
+    );
 
     return persistToken(response.data);
   } catch (error) {
@@ -180,8 +234,8 @@ export const refreshAccessToken = async (token: IToken): Promise<IToken> => {
   }
 };
 
-export const getValidToken = async (): Promise<IToken> => {
-  const token = await getStoredToken();
+export const getValidToken = async (userId?: string): Promise<IToken> => {
+  const token = await getStoredToken(userId);
 
   if (!shouldRefreshToken(token)) {
     return token;
@@ -190,34 +244,41 @@ export const getValidToken = async (): Promise<IToken> => {
   return refreshAccessToken(token);
 };
 
-export const mercadoLivreRequest = async <T>(config: AxiosRequestConfig): Promise<T> => {
-  const token = await getValidToken();
+export const mercadoLivreRequest = async <T>(
+  config: AxiosRequestConfig & { userId?: string }
+): Promise<T> => {
+  const { userId, ...requestConfig } = config;
+  const token = await getValidToken(userId);
 
   try {
-    const response = await axios.request<T>({
-      ...config,
-      baseURL: ML_API_BASE_URL,
-      headers: {
-        Accept: 'application/json',
-        ...config.headers,
-        Authorization: `Bearer ${token.access_token}`,
-      },
-    });
+    const response = await requestWithRetry(() =>
+      axios.request<T>({
+        ...requestConfig,
+        baseURL: ML_API_BASE_URL,
+        headers: {
+          Accept: 'application/json',
+          ...requestConfig.headers,
+          Authorization: `Bearer ${token.access_token}`,
+        },
+      })
+    );
 
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
       const refreshedToken = await refreshAccessToken(token);
 
-      const retriedResponse = await axios.request<T>({
-        ...config,
-        baseURL: ML_API_BASE_URL,
-        headers: {
-          Accept: 'application/json',
-          ...config.headers,
-          Authorization: `Bearer ${refreshedToken.access_token}`,
-        },
-      });
+      const retriedResponse = await requestWithRetry(() =>
+        axios.request<T>({
+          ...requestConfig,
+          baseURL: ML_API_BASE_URL,
+          headers: {
+            Accept: 'application/json',
+            ...requestConfig.headers,
+            Authorization: `Bearer ${refreshedToken.access_token}`,
+          },
+        })
+      );
 
       return retriedResponse.data;
     }
@@ -242,11 +303,11 @@ export const buildMercadoLivreAuthUrlWithState = (state?: string): string => {
   return `${baseUrl}&state=${encodeURIComponent(state)}`;
 };
 
-export const encodeFrontendState = (frontendUrl: string): string => {
-  return Buffer.from(JSON.stringify({ frontendUrl }), 'utf-8').toString('base64url');
+export const encodeFrontendState = (payload: OAuthStatePayload): string => {
+  return Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
 };
 
-export const decodeFrontendState = (state?: string): string | null => {
+export const decodeFrontendState = (state?: string): OAuthStatePayload | null => {
   if (!state) {
     return null;
   }
@@ -254,22 +315,32 @@ export const decodeFrontendState = (state?: string): string | null => {
   try {
     const parsedState = JSON.parse(Buffer.from(state, 'base64url').toString('utf-8')) as {
       frontendUrl?: unknown;
+      sessionId?: unknown;
     };
 
-    if (typeof parsedState.frontendUrl === 'string' && parsedState.frontendUrl.trim()) {
-      return parsedState.frontendUrl.trim();
-    }
+    const frontendUrl =
+      typeof parsedState.frontendUrl === 'string' && parsedState.frontendUrl.trim()
+        ? parsedState.frontendUrl.trim()
+        : undefined;
+    const sessionId =
+      typeof parsedState.sessionId === 'string' && parsedState.sessionId.trim()
+        ? parsedState.sessionId.trim()
+        : undefined;
+
+    return {
+      frontendUrl,
+      sessionId,
+    };
   } catch {
     return null;
   }
-
-  return null;
 };
 
 export const buildFrontendRedirectUrl = (
   status: 'success' | 'error',
   message?: string,
-  frontendUrlOverride?: string | null
+  frontendUrlOverride?: string | null,
+  sessionId?: string
 ): string | null => {
   const frontendUrl = frontendUrlOverride || process.env.FRONTEND_URL || 'http://localhost:5173';
 
@@ -283,6 +354,10 @@ export const buildFrontendRedirectUrl = (
 
     if (message) {
       redirectUrl.searchParams.set('message', message);
+    }
+
+    if (sessionId) {
+      redirectUrl.searchParams.set('session_id', sessionId);
     }
 
     return redirectUrl.toString();

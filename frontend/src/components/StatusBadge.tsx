@@ -14,6 +14,8 @@ const statusLabelMap: Record<string, { label: string; tone: string }> = {
 const syncLabelMap: Record<string, { label: string; tone: string }> = {
   synced: { label: 'Sincronizado', tone: 'info' },
   missing_remote: { label: 'Divergente', tone: 'warning' },
+  remote_changed: { label: 'Mudanca remota', tone: 'warning' },
+  conflict: { label: 'Conflito', tone: 'warning' },
 };
 
 function formatFallbackLabel(value: string): string {

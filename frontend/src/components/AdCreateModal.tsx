@@ -387,8 +387,8 @@ function AdCreateModal({
 
           <footer className="modal-card__footer">
             <p className="modal-card__hint">
-              O fluxo agora sugere categoria pelo titulo, carrega os tipos validos da conta e valida o
-              payload antes de publicar.
+              O fluxo sugere categoria pelo titulo, carrega os tipos validos da conta conectada nesta
+              sessao e valida o payload antes de publicar.
             </p>
             <div className="modal-card__actions">
               <button type="button" className="ghost-button" onClick={onValidate} disabled={isValidating}>

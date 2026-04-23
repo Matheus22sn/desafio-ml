@@ -3,6 +3,7 @@ export type ToastTone = 'success' | 'error' | 'info';
 export interface Ad {
   _id: string;
   ml_id: string;
+  seller_user_id?: string;
   site_id?: string;
   category_id?: string;
   listing_type_id?: string;
@@ -17,7 +18,9 @@ export interface Ad {
   status: string;
   sync_state?: string;
   last_error?: string;
+  sync_note?: string;
   last_sync?: string;
+  last_remote_change_at?: string;
   updatedAt?: string;
   createdAt?: string;
 }
@@ -28,6 +31,8 @@ export interface AdsSummary {
   paused: number;
   lowStock: number;
   unsynced: number;
+  conflicts: number;
+  remoteChanged: number;
   inventoryValue: number;
 }
 
@@ -110,6 +115,7 @@ export interface SellerProfile {
 
 export interface AuthStatus {
   authenticated: boolean;
+  session_id?: string;
   expires_at?: string;
   seller?: SellerProfile;
 }

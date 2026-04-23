@@ -3,6 +3,7 @@ import mongoose, { Schema } from 'mongoose';
 const AdSchema: Schema = new Schema(
   {
     ml_id: { type: String, required: true, unique: true },
+    seller_user_id: { type: String, required: true, index: true },
     site_id: { type: String, default: 'MLB' },
     category_id: { type: String },
     listing_type_id: { type: String },
@@ -17,7 +18,10 @@ const AdSchema: Schema = new Schema(
     status: { type: String, default: 'unknown' },
     sync_state: { type: String, default: 'synced' },
     last_error: { type: String, default: '' },
+    sync_note: { type: String, default: '' },
     last_sync: { type: Date, default: Date.now },
+    remote_state_hash: { type: String, default: '' },
+    last_remote_change_at: { type: Date },
   },
   { timestamps: true }
 );

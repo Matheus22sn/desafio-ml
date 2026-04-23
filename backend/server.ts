@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import adsRoutes from './routes/Ads';
+import { SESSION_HEADER_NAME } from './lib/session';
 import authRoutes from './routes/auth';
 
 dotenv.config();
@@ -14,7 +15,11 @@ const corsOrigin = process.env.CORS_ORIGIN
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/desafio_ml';
 
-app.use(cors({ origin: corsOrigin }));
+app.use(cors({
+  origin: corsOrigin,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', SESSION_HEADER_NAME],
+}));
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);

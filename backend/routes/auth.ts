@@ -1,5 +1,4 @@
 import { Request, Response, Router } from 'express';
-import Token from '../models/token';
 import {
   buildFrontendRedirectUrl,
   buildMercadoLivreAuthUrlWithState,
@@ -10,13 +9,19 @@ import {
   mercadoLivreRequest,
   toHttpError,
 } from '../lib/mercadoLibre';
+import { activateSession, createPendingSession, destroySession, requireSession } from '../lib/session';
 
 const router = Router();
 
-router.get('/login', (req: Request, res: Response) => {
+router.get('/login', async (req: Request, res: Response) => {
   try {
     const frontendUrl = typeof req.query.frontend_url === 'string' ? req.query.frontend_url.trim() : '';
-    const state = frontendUrl ? encodeFrontendState(frontendUrl) : undefined;
+    const session = await createPendingSession(frontendUrl);
+    const state = encodeFrontendState({
+      frontendUrl,
+      sessionId: session.session_id,
+    });
+
     res.json({ url: buildMercadoLivreAuthUrlWithState(state) });
   } catch (error) {
     const httpError = toHttpError(error, 'Unable to create the Mercado Livre authorization URL.');
@@ -26,7 +31,9 @@ router.get('/login', (req: Request, res: Response) => {
 
 router.get('/callback', async (req: Request, res: Response): Promise<void> => {
   const code = req.query.code as string;
-  const frontendUrlFromState = decodeFrontendState(typeof req.query.state === 'string' ? req.query.state : undefined);
+  const statePayload = decodeFrontendState(typeof req.query.state === 'string' ? req.query.state : undefined);
+  const frontendUrlFromState = statePayload?.frontendUrl;
+  const sessionIdFromState = statePayload?.sessionId;
 
   if (!code) {
     res.status(400).json({ error: 'Authorization code was not provided by Mercado Livre.' });
@@ -35,7 +42,17 @@ router.get('/callback', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const token = await exchangeAuthCode(code);
-    const redirectUrl = buildFrontendRedirectUrl('success', undefined, frontendUrlFromState);
+    const activeSession = await activateSession({
+      sessionId: sessionIdFromState || `fallback-${token.user_id}`,
+      sellerUserId: String(token.user_id),
+      frontendUrl: frontendUrlFromState,
+    });
+    const redirectUrl = buildFrontendRedirectUrl(
+      'success',
+      undefined,
+      frontendUrlFromState,
+      activeSession.session_id
+    );
 
     console.log(`Mercado Livre seller authenticated successfully. Seller ID: ${token.user_id}`);
 
@@ -62,7 +79,8 @@ router.get('/callback', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/status', async (req: Request, res: Response): Promise<void> => {
   try {
-    const token = await getValidToken();
+    const session = await requireSession(req);
+    const token = await getValidToken(session.seller_user_id);
     const seller = await mercadoLivreRequest<{
       id: number;
       nickname: string;
@@ -72,10 +90,12 @@ router.get('/status', async (req: Request, res: Response): Promise<void> => {
     }>({
       method: 'GET',
       url: '/users/me',
+      userId: session.seller_user_id,
     });
 
     res.json({
       authenticated: true,
+      session_id: session.session_id,
       expires_at: token.expires_at,
       seller: {
         id: seller.id,
@@ -99,7 +119,8 @@ router.get('/status', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/me', async (req: Request, res: Response): Promise<void> => {
   try {
-    const token = await getValidToken();
+    const session = await requireSession(req);
+    const token = await getValidToken(session.seller_user_id);
     const seller = await mercadoLivreRequest<{
       id: number;
       nickname: string;
@@ -109,6 +130,7 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
     }>({
       method: 'GET',
       url: '/users/me',
+      userId: session.seller_user_id,
     });
 
     res.json({
@@ -129,7 +151,7 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
 });
 
 router.delete('/session', async (req: Request, res: Response): Promise<void> => {
-  await Token.deleteMany({});
+  await destroySession(req);
   res.status(204).send();
 });
 

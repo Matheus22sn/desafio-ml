@@ -7,7 +7,7 @@ import AdEditModal from './components/AdEditModal';
 import MetricCard from './components/MetricCard';
 import StatusBadge from './components/StatusBadge';
 import ToastStack from './components/ToastStack';
-import { API_BASE_URL, api, getApiErrorMessage } from './lib/api';
+import { API_BASE_URL, api, clearSessionId, getApiErrorMessage, setSessionId } from './lib/api';
 import type {
   Ad,
   AdsResponse,
@@ -32,6 +32,8 @@ const emptySummary: AdsSummary = {
   paused: 0,
   lowStock: 0,
   unsynced: 0,
+  conflicts: 0,
+  remoteChanged: 0,
   inventoryValue: 0,
 };
 
@@ -166,6 +168,7 @@ function App() {
     return {
       state: searchParams.get('auth'),
       message: searchParams.get('message'),
+      sessionId: searchParams.get('session_id'),
     };
   });
   const [filters, setFilters] = useState<FiltersState>(initialFilters);
@@ -229,9 +232,15 @@ function App() {
 
     try {
       const response = await api.get<AuthStatus>('/auth/status');
+      if (response.data.session_id) {
+        setSessionId(response.data.session_id);
+      } else if (!response.data.authenticated) {
+        clearSessionId();
+      }
       setAuthStatus(response.data);
     } catch (error) {
       setAuthStatus({ authenticated: false });
+      clearSessionId();
       pushToast('error', 'Falha ao validar sessao', getApiErrorMessage(error));
     } finally {
       setIsLoadingAuth(false);
@@ -295,6 +304,23 @@ function App() {
       window.location.href = response.data.url;
     } catch (error) {
       pushToast('error', 'Falha ao iniciar autenticacao', getApiErrorMessage(error));
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.delete('/auth/session');
+    } catch {
+      // Intencionalmente silencioso: a sessao local sera descartada mesmo se a API falhar.
+    } finally {
+      clearSessionId();
+      setAuthStatus({ authenticated: false });
+      setAds([]);
+      setSummary(emptySummary);
+      setLastSyncedAt('');
+      setSelectedAd(null);
+      closeCreateModal();
+      pushToast('success', 'Sessao encerrada', 'A sessao isolada deste navegador foi removida.');
     }
   };
 
@@ -418,6 +444,7 @@ function App() {
         title: editForm.title,
         price: Number(editForm.price),
         available_quantity: Number(editForm.available_quantity),
+        expected_updated_at: selectedAd.updatedAt,
       });
 
       setAds((current) =>
@@ -428,6 +455,7 @@ function App() {
       await fetchAds(false);
     } catch (error) {
       pushToast('error', 'Falha ao atualizar anuncio', getApiErrorMessage(error));
+      await fetchAds(false);
     } finally {
       setIsSubmittingEdit(false);
     }
@@ -539,6 +567,10 @@ function App() {
       setToasts((current) => [...current, { id: toastId, tone, title, description }]);
     };
 
+    if (authFeedback.sessionId) {
+      setSessionId(authFeedback.sessionId);
+    }
+
     if (authFeedback.state === 'success') {
       appendToast('success', 'Conta autenticada', 'A sessao do vendedor foi conectada com sucesso.');
     }
@@ -565,6 +597,11 @@ function App() {
           return;
         }
 
+        if (response.data.session_id) {
+          setSessionId(response.data.session_id);
+        } else if (!response.data.authenticated) {
+          clearSessionId();
+        }
         setAuthStatus(response.data);
       } catch (error) {
         if (!active) {
@@ -572,6 +609,7 @@ function App() {
         }
 
         setAuthStatus({ authenticated: false });
+        clearSessionId();
         appendToast('error', 'Falha ao validar sessao', getApiErrorMessage(error));
       } finally {
         if (active) {
@@ -585,7 +623,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [authFeedback.message, authFeedback.state]);
+  }, [authFeedback.message, authFeedback.sessionId, authFeedback.state]);
 
   useEffect(() => {
     let active = true;
@@ -706,6 +744,11 @@ function App() {
               <button type="button" className="ghost-button" onClick={() => setIsCreateModalOpen(true)}>
                 Novo anuncio
               </button>
+              {authStatus.authenticated ? (
+                <button type="button" className="ghost-button" onClick={() => void handleLogout()}>
+                  Encerrar sessao
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -736,6 +779,7 @@ function App() {
                       <dd>{formatDateTime(authStatus.expires_at)}</dd>
                     </div>
                   </dl>
+                  <p className="seller-card__text">Sessao isolada por navegador. Outros acessos nao reutilizam esta conta automaticamente.</p>
                 </>
               ) : (
                 <>
@@ -751,9 +795,11 @@ function App() {
               <span className="section-tag">Deploy readiness</span>
               <ul className="delivery-card__list">
                 <li>Preditor de categoria pelo titulo.</li>
+                <li>Sessao isolada por navegador e vendedor.</li>
                 <li>Tipos de anuncio carregados da conta autenticada.</li>
                 <li>Atributos dinamicos por categoria.</li>
                 <li>Validacao do payload antes do `POST /items`.</li>
+                <li>Conflito basico com optimistic locking na edicao.</li>
               </ul>
               <p className="delivery-card__hint">
                 API base atual: <code>{API_BASE_URL}</code>
@@ -766,7 +812,8 @@ function App() {
           <MetricCard label="Total de anuncios" value={String(summary.total)} hint="Volume total em cache local" accent="gold" />
           <MetricCard label="Anuncios ativos" value={String(summary.active)} hint="Itens com status active" accent="green" />
           <MetricCard label="Estoque baixo" value={String(summary.lowStock)} hint="Itens com ate 5 unidades" accent="blue" />
-          <MetricCard label="Itens divergentes" value={String(summary.unsynced)} hint="Registros locais fora do remoto" accent="slate" />
+          <MetricCard label="Itens divergentes" value={String(summary.unsynced)} hint={`${summary.remoteChanged} mudancas remotas e ${summary.conflicts} conflitos`} accent="slate" />
+          <MetricCard label="Conflitos locais" value={String(summary.conflicts)} hint="Bloqueios por concorrencia otimista" accent="blue" />
           <MetricCard label="Valor do inventario" value={currencyFormatter.format(summary.inventoryValue)} hint="Preco x estoque em cache" accent="gold" />
         </section>
 
@@ -827,6 +874,8 @@ function App() {
               >
                 <option value="all">Todos</option>
                 <option value="synced">Sincronizados</option>
+                <option value="remote_changed">Mudanca remota</option>
+                <option value="conflict">Conflito local</option>
                 <option value="missing_remote">Divergentes</option>
               </select>
             </label>
@@ -946,6 +995,9 @@ function App() {
                             <div>
                               <strong>{ad.title}</strong>
                               <span>{ad.category_id || 'Categoria nao informada'}</span>
+                              {ad.sync_note || ad.last_error ? (
+                                <p className="table-inline-note">{ad.sync_note || ad.last_error}</p>
+                              ) : null}
                             </div>
                           </div>
                         </td>
@@ -1008,6 +1060,10 @@ function App() {
                         <dd>{formatDateTime(ad.updatedAt || ad.last_sync)}</dd>
                       </div>
                     </dl>
+
+                    {ad.sync_note || ad.last_error ? (
+                      <p className="ad-card__note">{ad.sync_note || ad.last_error}</p>
+                    ) : null}
 
                     <div className="ad-card__actions">
                       <button type="button" className="secondary-button" onClick={() => handleOpenEditModal(ad)}>

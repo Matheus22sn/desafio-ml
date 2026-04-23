@@ -1,6 +1,8 @@
+import { createHash } from 'crypto';
 import { Request, Response, Router } from 'express';
 import Ad from '../models/Ad';
 import { getValidToken, mercadoLivreRequest, HttpError, toHttpError } from '../lib/mercadoLibre';
+import { getOptionalSession, requireSession } from '../lib/session';
 
 const router = Router();
 
@@ -60,6 +62,11 @@ type ValidationCause = {
   references?: string[];
 };
 
+type PersistRemoteItemOptions = {
+  sellerUserId: string;
+  source: 'sync' | 'create' | 'update';
+};
+
 const parseText = (value: unknown, fieldName: string): string => {
   if (typeof value !== 'string' || !value.trim()) {
     throw new HttpError(400, `Field "${fieldName}" is required.`);
@@ -88,6 +95,20 @@ const parseInteger = (value: unknown, fieldName: string, allowZero = false): num
 
   if (!Number.isInteger(parsedValue)) {
     throw new HttpError(400, `Field "${fieldName}" must be an integer.`);
+  }
+
+  return parsedValue;
+};
+
+const parseDate = (value: unknown, fieldName: string): Date => {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new HttpError(400, `Field "${fieldName}" is required.`);
+  }
+
+  const parsedValue = new Date(value);
+
+  if (Number.isNaN(parsedValue.getTime())) {
+    throw new HttpError(400, `Field "${fieldName}" must be a valid date string.`);
   }
 
   return parsedValue;
@@ -190,29 +211,81 @@ const buildPublicationPayload = (body: Request['body']) => {
   };
 };
 
-const mapRemoteItemToLocal = (item: MercadoLivreItem) => ({
-  ml_id: item.id,
-  site_id: item.site_id ?? 'MLB',
-  category_id: item.category_id ?? '',
-  listing_type_id: item.listing_type_id ?? '',
-  currency_id: item.currency_id ?? 'BRL',
-  title: item.title ?? 'Untitled item',
-  price: item.price ?? 0,
-  available_quantity: item.available_quantity ?? 0,
-  sold_quantity: item.sold_quantity ?? 0,
-  condition: item.condition ?? 'new',
-  thumbnail: item.thumbnail ?? '',
-  permalink: item.permalink ?? '',
-  status: item.status ?? 'unknown',
-  sync_state: 'synced',
-  last_error: '',
-  last_sync: new Date(),
-});
+const buildRemoteStateHash = (item: MercadoLivreItem): string => {
+  const normalized = {
+    id: item.id,
+    title: item.title ?? '',
+    price: item.price ?? 0,
+    available_quantity: item.available_quantity ?? 0,
+    sold_quantity: item.sold_quantity ?? 0,
+    status: item.status ?? '',
+    category_id: item.category_id ?? '',
+    listing_type_id: item.listing_type_id ?? '',
+    condition: item.condition ?? '',
+    currency_id: item.currency_id ?? '',
+    permalink: item.permalink ?? '',
+    thumbnail: item.thumbnail ?? '',
+  };
 
-const persistRemoteItem = async (item: MercadoLivreItem) => {
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+};
+
+const buildLocalAdUpdate = (
+  item: MercadoLivreItem,
+  sellerUserId: string,
+  remoteStateHash: string,
+  source: PersistRemoteItemOptions['source'],
+  previousRemoteStateHash?: string,
+  previousRemoteChangeAt?: Date
+) => {
+  const remoteChanged = Boolean(previousRemoteStateHash && previousRemoteStateHash !== remoteStateHash);
+  const syncState = source === 'sync' && remoteChanged ? 'remote_changed' : 'synced';
+  const syncNote =
+    source === 'sync' && remoteChanged
+      ? 'Marketplace item changed since the last stored local snapshot.'
+      : '';
+
+  return {
+    seller_user_id: sellerUserId,
+    ml_id: item.id,
+    site_id: item.site_id ?? 'MLB',
+    category_id: item.category_id ?? '',
+    listing_type_id: item.listing_type_id ?? '',
+    currency_id: item.currency_id ?? 'BRL',
+    title: item.title ?? 'Untitled item',
+    price: item.price ?? 0,
+    available_quantity: item.available_quantity ?? 0,
+    sold_quantity: item.sold_quantity ?? 0,
+    condition: item.condition ?? 'new',
+    thumbnail: item.thumbnail ?? '',
+    permalink: item.permalink ?? '',
+    status: item.status ?? 'unknown',
+    sync_state: syncState,
+    last_error: '',
+    sync_note: syncNote,
+    last_sync: new Date(),
+    remote_state_hash: remoteStateHash,
+    last_remote_change_at: remoteChanged ? new Date() : previousRemoteChangeAt ?? new Date(),
+  };
+};
+
+const persistRemoteItem = async (
+  item: MercadoLivreItem,
+  { sellerUserId, source }: PersistRemoteItemOptions
+) => {
+  const existingItem = await Ad.findOne({ seller_user_id: sellerUserId, ml_id: item.id });
+  const remoteStateHash = buildRemoteStateHash(item);
+
   return Ad.findOneAndUpdate(
-    { ml_id: item.id },
-    mapRemoteItemToLocal(item),
+    { seller_user_id: sellerUserId, ml_id: item.id },
+    buildLocalAdUpdate(
+      item,
+      sellerUserId,
+      remoteStateHash,
+      source,
+      typeof existingItem?.remote_state_hash === 'string' ? existingItem.remote_state_hash : undefined,
+      existingItem?.last_remote_change_at instanceof Date ? existingItem.last_remote_change_at : undefined
+    ),
     {
       upsert: true,
       new: true,
@@ -227,6 +300,8 @@ const buildSummary = (items: Array<any>) => {
   const paused = items.filter((item) => item.status === 'paused').length;
   const lowStock = items.filter((item) => item.available_quantity > 0 && item.available_quantity <= 5).length;
   const unsynced = items.filter((item) => item.sync_state !== 'synced').length;
+  const conflicts = items.filter((item) => item.sync_state === 'conflict').length;
+  const remoteChanged = items.filter((item) => item.sync_state === 'remote_changed').length;
   const inventoryValue = items.reduce(
     (sum, item) => sum + Number(item.price || 0) * Number(item.available_quantity || 0),
     0
@@ -238,12 +313,25 @@ const buildSummary = (items: Array<any>) => {
     paused,
     lowStock,
     unsynced,
+    conflicts,
+    remoteChanged,
     inventoryValue,
   };
 };
 
 const fetchLocalAds = async (req: Request) => {
-  const query: Record<string, unknown> = {};
+  const session = await getOptionalSession(req);
+
+  if (!session?.seller_user_id) {
+    return {
+      items: [],
+      summary: buildSummary([]),
+    };
+  }
+
+  const query: Record<string, unknown> = {
+    seller_user_id: session.seller_user_id,
+  };
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
   const syncState = typeof req.query.sync_state === 'string' ? req.query.sync_state.trim() : '';
@@ -286,12 +374,13 @@ const fetchLocalAds = async (req: Request) => {
   };
 };
 
-const syncSellerAds = async () => {
-  const token = await getValidToken();
+const syncSellerAds = async (sellerUserId: string) => {
+  const token = await getValidToken(sellerUserId);
   const warnings: string[] = [];
   const searchResult = await mercadoLivreRequest<{ results?: string[] }>({
     method: 'GET',
     url: `/users/${token.user_id}/items/search`,
+    userId: sellerUserId,
   });
 
   const ids = Array.isArray(searchResult.results) ? searchResult.results : [];
@@ -304,6 +393,7 @@ const syncSellerAds = async () => {
       params: {
         ids: ids.join(','),
       },
+      userId: sellerUserId,
     });
 
     const persistenceQueue = detailedItems.map(async (entry) => {
@@ -312,23 +402,29 @@ const syncSellerAds = async () => {
         return null;
       }
 
-      return persistRemoteItem(entry.body);
+      return persistRemoteItem(entry.body, {
+        sellerUserId,
+        source: 'sync',
+      });
     });
 
     await Promise.all(persistenceQueue);
   }
 
   await Ad.updateMany(
-    ids.length > 0 ? { ml_id: { $nin: ids } } : {},
+    ids.length > 0
+      ? { seller_user_id: sellerUserId, ml_id: { $nin: ids } }
+      : { seller_user_id: sellerUserId },
     {
       $set: {
         sync_state: 'missing_remote',
+        sync_note: 'Item was not returned by the Mercado Livre seller inventory search.',
         last_sync: syncedAt,
       },
     }
   );
 
-  const items = await Ad.find().sort({ updatedAt: -1 });
+  const items = await Ad.find({ seller_user_id: sellerUserId }).sort({ updatedAt: -1 });
 
   return {
     items,
@@ -340,7 +436,8 @@ const syncSellerAds = async () => {
 
 const handleSync = async (req: Request, res: Response) => {
   try {
-    const response = await syncSellerAds();
+    const session = await requireSession(req);
+    const response = await syncSellerAds(session.seller_user_id);
     res.json(response);
   } catch (error) {
     const httpError = toHttpError(error, 'Failed to synchronize ads with Mercado Livre.');
@@ -402,7 +499,8 @@ router.get('/category-context', async (req: Request, res: Response) => {
   }
 
   try {
-    const token = await getValidToken();
+    const session = await requireSession(req);
+    const token = await getValidToken(session.seller_user_id);
     const [listingTypesResponse, attributesResponse, categoryResponse] = await Promise.all([
       mercadoLivreRequest<ListingTypeResponse>({
         method: 'GET',
@@ -410,14 +508,17 @@ router.get('/category-context', async (req: Request, res: Response) => {
         params: {
           category_id: categoryId,
         },
+        userId: session.seller_user_id,
       }),
       mercadoLivreRequest<CategoryAttributeResponse[]>({
         method: 'GET',
         url: `/categories/${categoryId}/attributes`,
+        userId: session.seller_user_id,
       }),
       mercadoLivreRequest<CategoryDetailsResponse>({
         method: 'GET',
         url: `/categories/${categoryId}`,
+        userId: session.seller_user_id,
       }),
     ]);
 
@@ -465,13 +566,15 @@ router.get('/listing-types', async (req: Request, res: Response) => {
   }
 
   try {
-    const token = await getValidToken();
+    const session = await requireSession(req);
+    const token = await getValidToken(session.seller_user_id);
     const listingTypesResponse = await mercadoLivreRequest<ListingTypeResponse>({
       method: 'GET',
       url: `/users/${token.user_id}/available_listing_types`,
       params: {
         category_id: categoryId,
       },
+      userId: session.seller_user_id,
     });
 
     res.json({ items: listingTypesResponse.available ?? [] });
@@ -483,6 +586,7 @@ router.get('/listing-types', async (req: Request, res: Response) => {
 
 router.post('/validate', async (req: Request, res: Response) => {
   try {
+    const session = await requireSession(req);
     const payload = buildPublicationPayload(req.body);
     const response = await mercadoLivreRequest<{
       status?: string;
@@ -491,6 +595,7 @@ router.post('/validate', async (req: Request, res: Response) => {
       method: 'POST',
       url: '/items/validate',
       data: payload,
+      userId: session.seller_user_id,
     });
 
     res.json({
@@ -520,15 +625,21 @@ router.post('/validate', async (req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   try {
+    const session = await requireSession(req);
     const payload = buildPublicationPayload(req.body);
 
     const createdItem = await mercadoLivreRequest<MercadoLivreItem>({
       method: 'POST',
       url: '/items',
       data: payload,
+      userId: session.seller_user_id,
     });
 
-    const storedItem = await persistRemoteItem(createdItem);
+    const storedItem = await persistRemoteItem(createdItem, {
+      sellerUserId: session.seller_user_id,
+      source: 'create',
+    });
+
     res.status(201).json(storedItem);
   } catch (error) {
     const httpError = toHttpError(error, 'Failed to create the ad on Mercado Livre.');
@@ -538,6 +649,31 @@ router.post('/', async (req: Request, res: Response) => {
 
 router.put('/:id', async (req: Request, res: Response) => {
   try {
+    const session = await requireSession(req);
+    const currentAd = await Ad.findOne({
+      seller_user_id: session.seller_user_id,
+      ml_id: req.params.id,
+    });
+
+    if (!currentAd) {
+      throw new HttpError(404, 'The requested ad was not found for this seller session.');
+    }
+
+    if (req.body.expected_updated_at !== undefined) {
+      const expectedUpdatedAt = parseDate(req.body.expected_updated_at, 'expected_updated_at');
+      const currentUpdatedAt = currentAd.updatedAt instanceof Date ? currentAd.updatedAt : null;
+
+      if (!currentUpdatedAt || currentUpdatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+        currentAd.sync_state = 'conflict';
+        currentAd.last_error = 'Optimistic lock blocked this update because a newer local version already exists.';
+        currentAd.sync_note = 'Reload the list before trying to update this item again.';
+        currentAd.last_sync = new Date();
+        await currentAd.save();
+
+        throw new HttpError(409, 'The ad changed before this update was saved. Reload the list and try again.');
+      }
+    }
+
     const updates: Record<string, unknown> = {};
 
     if (req.body.title !== undefined) {
@@ -560,14 +696,20 @@ router.put('/:id', async (req: Request, res: Response) => {
       method: 'PUT',
       url: `/items/${req.params.id}`,
       data: updates,
+      userId: session.seller_user_id,
     });
 
     const refreshedItem = await mercadoLivreRequest<MercadoLivreItem>({
       method: 'GET',
       url: `/items/${req.params.id}`,
+      userId: session.seller_user_id,
     });
 
-    const storedItem = await persistRemoteItem(refreshedItem);
+    const storedItem = await persistRemoteItem(refreshedItem, {
+      sellerUserId: session.seller_user_id,
+      source: 'update',
+    });
+
     res.json(storedItem);
   } catch (error) {
     const httpError = toHttpError(error, 'Failed to update the ad on Mercado Livre.');

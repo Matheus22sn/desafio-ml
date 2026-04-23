@@ -75,7 +75,7 @@ function AdEditModal({
 
           <footer className="modal-card__footer">
             <p className="modal-card__hint">
-              Esta acao atualiza o item no Mercado Livre e depois sincroniza o registro local.
+              Esta acao atualiza o item no Mercado Livre, reaplica o snapshot local e bloqueia salvamento se a versao local mudou no meio da edicao.
             </p>
             <button type="submit" className="primary-button" disabled={isSubmitting}>
               {isSubmitting ? 'Salvando...' : 'Salvar alteracoes'}
