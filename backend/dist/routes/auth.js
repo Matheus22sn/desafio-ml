@@ -9,7 +9,9 @@ const mercadoLibre_1 = require("../lib/mercadoLibre");
 const router = (0, express_1.Router)();
 router.get('/login', (req, res) => {
     try {
-        res.json({ url: (0, mercadoLibre_1.buildMercadoLivreAuthUrl)() });
+        const frontendUrl = typeof req.query.frontend_url === 'string' ? req.query.frontend_url.trim() : '';
+        const state = frontendUrl ? (0, mercadoLibre_1.encodeFrontendState)(frontendUrl) : undefined;
+        res.json({ url: (0, mercadoLibre_1.buildMercadoLivreAuthUrlWithState)(state) });
     }
     catch (error) {
         const httpError = (0, mercadoLibre_1.toHttpError)(error, 'Unable to create the Mercado Livre authorization URL.');
@@ -18,13 +20,14 @@ router.get('/login', (req, res) => {
 });
 router.get('/callback', async (req, res) => {
     const code = req.query.code;
+    const frontendUrlFromState = (0, mercadoLibre_1.decodeFrontendState)(typeof req.query.state === 'string' ? req.query.state : undefined);
     if (!code) {
         res.status(400).json({ error: 'Authorization code was not provided by Mercado Livre.' });
         return;
     }
     try {
         const token = await (0, mercadoLibre_1.exchangeAuthCode)(code);
-        const redirectUrl = (0, mercadoLibre_1.buildFrontendRedirectUrl)('success');
+        const redirectUrl = (0, mercadoLibre_1.buildFrontendRedirectUrl)('success', undefined, frontendUrlFromState);
         console.log(`Mercado Livre seller authenticated successfully. Seller ID: ${token.user_id}`);
         if (redirectUrl) {
             res.redirect(redirectUrl);
@@ -34,7 +37,7 @@ router.get('/callback', async (req, res) => {
     }
     catch (error) {
         const httpError = (0, mercadoLibre_1.toHttpError)(error, 'Authentication with Mercado Livre failed.');
-        const redirectUrl = (0, mercadoLibre_1.buildFrontendRedirectUrl)('error', httpError.message);
+        const redirectUrl = (0, mercadoLibre_1.buildFrontendRedirectUrl)('error', httpError.message, frontendUrlFromState);
         console.error('Mercado Livre authentication error:', httpError.details ?? httpError.message);
         if (redirectUrl) {
             res.redirect(redirectUrl);

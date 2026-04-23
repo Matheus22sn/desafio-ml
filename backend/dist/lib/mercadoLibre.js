@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildFrontendRedirectUrl = exports.buildMercadoLivreAuthUrl = exports.mercadoLivreRequest = exports.getValidToken = exports.refreshAccessToken = exports.exchangeAuthCode = exports.toHttpError = exports.HttpError = void 0;
+exports.buildFrontendRedirectUrl = exports.decodeFrontendState = exports.encodeFrontendState = exports.buildMercadoLivreAuthUrlWithState = exports.buildMercadoLivreAuthUrl = exports.mercadoLivreRequest = exports.getValidToken = exports.refreshAccessToken = exports.exchangeAuthCode = exports.toHttpError = exports.HttpError = void 0;
 const axios_1 = __importDefault(require("axios"));
 const token_1 = __importDefault(require("../models/token"));
 const ML_API_BASE_URL = 'https://api.mercadolibre.com';
@@ -188,8 +188,36 @@ const buildMercadoLivreAuthUrl = () => {
     return `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${appId}&redirect_uri=${redirectUri}`;
 };
 exports.buildMercadoLivreAuthUrl = buildMercadoLivreAuthUrl;
-const buildFrontendRedirectUrl = (status, message) => {
-    const frontendUrl = process.env.FRONTEND_URL;
+const buildMercadoLivreAuthUrlWithState = (state) => {
+    const baseUrl = (0, exports.buildMercadoLivreAuthUrl)();
+    if (!state) {
+        return baseUrl;
+    }
+    return `${baseUrl}&state=${encodeURIComponent(state)}`;
+};
+exports.buildMercadoLivreAuthUrlWithState = buildMercadoLivreAuthUrlWithState;
+const encodeFrontendState = (frontendUrl) => {
+    return Buffer.from(JSON.stringify({ frontendUrl }), 'utf-8').toString('base64url');
+};
+exports.encodeFrontendState = encodeFrontendState;
+const decodeFrontendState = (state) => {
+    if (!state) {
+        return null;
+    }
+    try {
+        const parsedState = JSON.parse(Buffer.from(state, 'base64url').toString('utf-8'));
+        if (typeof parsedState.frontendUrl === 'string' && parsedState.frontendUrl.trim()) {
+            return parsedState.frontendUrl.trim();
+        }
+    }
+    catch {
+        return null;
+    }
+    return null;
+};
+exports.decodeFrontendState = decodeFrontendState;
+const buildFrontendRedirectUrl = (status, message, frontendUrlOverride) => {
+    const frontendUrl = frontendUrlOverride || process.env.FRONTEND_URL || 'http://localhost:5173';
     if (!frontendUrl) {
         return null;
     }

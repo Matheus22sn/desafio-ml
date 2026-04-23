@@ -149,7 +149,9 @@ function AdCreateModal({
     return null;
   }
 
-  const visibleAttributes = categoryAttributes.filter((attribute) => !attribute.hidden);
+  const visibleAttributes = categoryAttributes.filter(
+    (attribute) => !attribute.hidden || attribute.id === 'GTIN' || attribute.id === 'EMPTY_GTIN_REASON'
+  );
   const requiredAttributes = visibleAttributes.filter((attribute) => attribute.required || attribute.fixed);
   const optionalAttributes = visibleAttributes.filter((attribute) => !attribute.required && !attribute.fixed);
 
@@ -343,7 +345,7 @@ function AdCreateModal({
                 </div>
               </header>
               <div className="attribute-grid">
-                {optionalAttributes.slice(0, 8).map((attribute) => (
+                {optionalAttributes.map((attribute) => (
                   <label key={attribute.id} className="field">
                     <span>{attribute.name}</span>
                     {renderAttributeInput(attribute, attributeDrafts[attribute.id], onAttributeChange)}

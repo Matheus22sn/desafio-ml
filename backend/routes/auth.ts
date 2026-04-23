@@ -2,7 +2,9 @@ import { Request, Response, Router } from 'express';
 import Token from '../models/token';
 import {
   buildFrontendRedirectUrl,
-  buildMercadoLivreAuthUrl,
+  buildMercadoLivreAuthUrlWithState,
+  decodeFrontendState,
+  encodeFrontendState,
   exchangeAuthCode,
   getValidToken,
   mercadoLivreRequest,
@@ -13,7 +15,9 @@ const router = Router();
 
 router.get('/login', (req: Request, res: Response) => {
   try {
-    res.json({ url: buildMercadoLivreAuthUrl() });
+    const frontendUrl = typeof req.query.frontend_url === 'string' ? req.query.frontend_url.trim() : '';
+    const state = frontendUrl ? encodeFrontendState(frontendUrl) : undefined;
+    res.json({ url: buildMercadoLivreAuthUrlWithState(state) });
   } catch (error) {
     const httpError = toHttpError(error, 'Unable to create the Mercado Livre authorization URL.');
     res.status(httpError.status).json({ error: httpError.message, details: httpError.details });
@@ -22,6 +26,7 @@ router.get('/login', (req: Request, res: Response) => {
 
 router.get('/callback', async (req: Request, res: Response): Promise<void> => {
   const code = req.query.code as string;
+  const frontendUrlFromState = decodeFrontendState(typeof req.query.state === 'string' ? req.query.state : undefined);
 
   if (!code) {
     res.status(400).json({ error: 'Authorization code was not provided by Mercado Livre.' });
@@ -30,7 +35,7 @@ router.get('/callback', async (req: Request, res: Response): Promise<void> => {
 
   try {
     const token = await exchangeAuthCode(code);
-    const redirectUrl = buildFrontendRedirectUrl('success');
+    const redirectUrl = buildFrontendRedirectUrl('success', undefined, frontendUrlFromState);
 
     console.log(`Mercado Livre seller authenticated successfully. Seller ID: ${token.user_id}`);
 
@@ -42,7 +47,7 @@ router.get('/callback', async (req: Request, res: Response): Promise<void> => {
     res.send('Seller authenticated successfully. You can return to the frontend.');
   } catch (error) {
     const httpError = toHttpError(error, 'Authentication with Mercado Livre failed.');
-    const redirectUrl = buildFrontendRedirectUrl('error', httpError.message);
+    const redirectUrl = buildFrontendRedirectUrl('error', httpError.message, frontendUrlFromState);
 
     console.error('Mercado Livre authentication error:', httpError.details ?? httpError.message);
 

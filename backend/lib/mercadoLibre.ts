@@ -232,11 +232,46 @@ export const buildMercadoLivreAuthUrl = (): string => {
   return `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${appId}&redirect_uri=${redirectUri}`;
 };
 
+export const buildMercadoLivreAuthUrlWithState = (state?: string): string => {
+  const baseUrl = buildMercadoLivreAuthUrl();
+
+  if (!state) {
+    return baseUrl;
+  }
+
+  return `${baseUrl}&state=${encodeURIComponent(state)}`;
+};
+
+export const encodeFrontendState = (frontendUrl: string): string => {
+  return Buffer.from(JSON.stringify({ frontendUrl }), 'utf-8').toString('base64url');
+};
+
+export const decodeFrontendState = (state?: string): string | null => {
+  if (!state) {
+    return null;
+  }
+
+  try {
+    const parsedState = JSON.parse(Buffer.from(state, 'base64url').toString('utf-8')) as {
+      frontendUrl?: unknown;
+    };
+
+    if (typeof parsedState.frontendUrl === 'string' && parsedState.frontendUrl.trim()) {
+      return parsedState.frontendUrl.trim();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
 export const buildFrontendRedirectUrl = (
   status: 'success' | 'error',
-  message?: string
+  message?: string,
+  frontendUrlOverride?: string | null
 ): string | null => {
-  const frontendUrl = process.env.FRONTEND_URL;
+  const frontendUrl = frontendUrlOverride || process.env.FRONTEND_URL || 'http://localhost:5173';
 
   if (!frontendUrl) {
     return null;

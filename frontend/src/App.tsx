@@ -117,12 +117,14 @@ const buildAttributePayload = (
           return null;
         }
 
+        const matchedUnit = attribute.allowed_units.find(
+          (unit) => unit.id === draft.unit || unit.name === draft.unit
+        );
+        const resolvedUnit = matchedUnit?.name || matchedUnit?.id || draft.unit.trim();
+
         return {
           id: attribute.id,
-          value_struct: {
-            number: Number(draft.value),
-            unit: draft.unit,
-          },
+          value_name: `${draft.value.trim()} ${resolvedUnit}`.trim(),
         };
       }
 
@@ -285,7 +287,11 @@ function App() {
 
   const handleConnectSeller = async () => {
     try {
-      const response = await api.get<{ url: string }>('/auth/login');
+      const response = await api.get<{ url: string }>('/auth/login', {
+        params: {
+          frontend_url: window.location.origin,
+        },
+      });
       window.location.href = response.data.url;
     } catch (error) {
       pushToast('error', 'Falha ao iniciar autenticacao', getApiErrorMessage(error));
