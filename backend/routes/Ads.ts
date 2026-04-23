@@ -65,16 +65,6 @@ type ValidationCause = {
   references?: string[];
 };
 
-type UserShippingPreferencesResponse = {
-  modes?: string[];
-};
-
-type CategoryShippingPreferencesResponse = {
-  logistics?: Array<{
-    mode?: string;
-  }>;
-};
-
 type PublicationAttribute = {
   id: string;
   value_id?: string;
@@ -302,46 +292,20 @@ const ensureHiddenConditionalAttributes = (attributes: ReturnType<typeof normali
   ];
 };
 
-const resolvePublicationShipping = async (sellerUserId: string, categoryId: string) => {
-  const token = await getValidToken(sellerUserId);
-  const [userShippingPreferences, categoryShippingPreferences] = await Promise.all([
-    mercadoLivreRequest<UserShippingPreferencesResponse>({
-      method: 'GET',
-      url: `/users/${token.user_id}/shipping_preferences`,
-      userId: sellerUserId,
-    }),
-    mercadoLivreRequest<CategoryShippingPreferencesResponse>({
-      method: 'GET',
-      url: `/categories/${categoryId}/shipping_preferences`,
-      userId: sellerUserId,
-    }),
-  ]);
-
-  const userModes = new Set((userShippingPreferences.modes ?? []).filter(Boolean));
-  const categoryModes = new Set(
-    (categoryShippingPreferences.logistics ?? [])
-      .map((logistic) => logistic.mode)
-      .filter((mode): mode is string => Boolean(mode))
-  );
-
-  if (userModes.has('me2') && categoryModes.has('me2')) {
-    return {
-      mode: 'me2',
-      local_pick_up: false,
-    };
-  }
-
-  return undefined;
-};
-
-const applyPublicationPayloadDefaults = async (
-  sellerUserId: string,
+const applyPublicationPayloadDefaults = (
   payload: ReturnType<typeof buildPublicationPayload>
-) => ({
-  ...payload,
-  attributes: ensureHiddenConditionalAttributes(payload.attributes),
-  shipping: await resolvePublicationShipping(sellerUserId, payload.category_id),
-});
+) => {
+  const { shipping: _ignoredShipping, ...payloadWithoutShipping } = payload as ReturnType<
+    typeof buildPublicationPayload
+  > & {
+    shipping?: unknown;
+  };
+
+  return {
+    ...payloadWithoutShipping,
+    attributes: ensureHiddenConditionalAttributes(payload.attributes),
+  };
+};
 
 const buildRemoteStateHash = (item: MercadoLivreItem): string => {
   const normalized = {
@@ -858,7 +822,7 @@ router.post('/validate', async (req: Request, res: Response) => {
     }>({
       method: 'POST',
       url: '/items/validate',
-      data: await applyPublicationPayloadDefaults(session.seller_user_id, payload),
+      data: applyPublicationPayloadDefaults(payload),
       userId: session.seller_user_id,
     });
 
@@ -895,7 +859,7 @@ router.post('/', async (req: Request, res: Response) => {
     const createdItem = await mercadoLivreRequest<MercadoLivreItem>({
       method: 'POST',
       url: '/items',
-      data: await applyPublicationPayloadDefaults(session.seller_user_id, payload),
+      data: applyPublicationPayloadDefaults(payload),
       userId: session.seller_user_id,
     });
 
