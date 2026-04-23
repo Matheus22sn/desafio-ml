@@ -65,6 +65,16 @@ type ValidationCause = {
   references?: string[];
 };
 
+type UserShippingPreferencesResponse = {
+  modes?: string[];
+};
+
+type CategoryShippingPreferencesResponse = {
+  logistics?: Array<{
+    mode?: string;
+  }>;
+};
+
 type PublicationAttribute = {
   id: string;
   value_id?: string;
@@ -292,9 +302,44 @@ const ensureHiddenConditionalAttributes = (attributes: ReturnType<typeof normali
   ];
 };
 
-const applyPublicationPayloadDefaults = (payload: ReturnType<typeof buildPublicationPayload>) => ({
+const resolvePublicationShipping = async (sellerUserId: string, categoryId: string) => {
+  const [userShippingPreferences, categoryShippingPreferences] = await Promise.all([
+    mercadoLivreRequest<UserShippingPreferencesResponse>({
+      method: 'GET',
+      url: '/users/me/shipping_preferences',
+      userId: sellerUserId,
+    }),
+    mercadoLivreRequest<CategoryShippingPreferencesResponse>({
+      method: 'GET',
+      url: `/categories/${categoryId}/shipping_preferences`,
+      userId: sellerUserId,
+    }),
+  ]);
+
+  const userModes = new Set((userShippingPreferences.modes ?? []).filter(Boolean));
+  const categoryModes = new Set(
+    (categoryShippingPreferences.logistics ?? [])
+      .map((logistic) => logistic.mode)
+      .filter((mode): mode is string => Boolean(mode))
+  );
+
+  if (userModes.has('me2') && categoryModes.has('me2')) {
+    return {
+      mode: 'me2',
+      local_pick_up: false,
+    };
+  }
+
+  return undefined;
+};
+
+const applyPublicationPayloadDefaults = async (
+  sellerUserId: string,
+  payload: ReturnType<typeof buildPublicationPayload>
+) => ({
   ...payload,
   attributes: ensureHiddenConditionalAttributes(payload.attributes),
+  shipping: await resolvePublicationShipping(sellerUserId, payload.category_id),
 });
 
 const buildRemoteStateHash = (item: MercadoLivreItem): string => {
@@ -812,7 +857,7 @@ router.post('/validate', async (req: Request, res: Response) => {
     }>({
       method: 'POST',
       url: '/items/validate',
-      data: applyPublicationPayloadDefaults(payload),
+      data: await applyPublicationPayloadDefaults(session.seller_user_id, payload),
       userId: session.seller_user_id,
     });
 
@@ -849,7 +894,7 @@ router.post('/', async (req: Request, res: Response) => {
     const createdItem = await mercadoLivreRequest<MercadoLivreItem>({
       method: 'POST',
       url: '/items',
-      data: applyPublicationPayloadDefaults(payload),
+      data: await applyPublicationPayloadDefaults(session.seller_user_id, payload),
       userId: session.seller_user_id,
     });
 
