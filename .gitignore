@@ -1,7 +1,12 @@
 node_modules/
+**/node_modules/
 dist/
+**/dist/
 coverage/
 
+.env
+.env.*
+!.env.example
 backend/.env
 frontend/.env
 
