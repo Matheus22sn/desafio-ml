@@ -212,6 +212,11 @@ const buildEffectiveCreateTitle = (
   return cleanTitleSpacing(titleParts.join(' ')).slice(0, titleLimit).trim();
 };
 
+const hasAttributeDraftValue = (
+  drafts: Record<string, CategoryAttributeDraft>,
+  attributeId: string
+) => Boolean(drafts[attributeId]?.value.trim());
+
 const buildAttributePayload = (
   attributes: CategoryAttribute[],
   drafts: Record<string, CategoryAttributeDraft>
@@ -603,17 +608,35 @@ function App() {
     const missingRequired = categoryAttributes
       .filter((attr) => attr.required && !attr.fixed)
       .filter((attr) => {
+        if (attr.id === 'GTIN') {
+          return !hasAttributeDraftValue(attributeDrafts, 'GTIN') && !hasAttributeDraftValue(attributeDrafts, 'EMPTY_GTIN_REASON');
+        }
+
+        if (attr.id === 'EMPTY_GTIN_REASON') {
+          return !hasAttributeDraftValue(attributeDrafts, 'GTIN') && !hasAttributeDraftValue(attributeDrafts, 'EMPTY_GTIN_REASON');
+        }
+
         const draft = attributeDrafts[attr.id];
         return !draft || !draft.value.trim();
       });
 
     if (missingRequired.length > 0) {
-      const names = missingRequired.map((attribute) => attribute.name).join(', ');
+      const deduplicatedMissingRequired = missingRequired.filter(
+        (attribute, index, items) =>
+          !(
+            ['GTIN', 'EMPTY_GTIN_REASON'].includes(attribute.id) &&
+            items.slice(0, index).some((candidate) => ['GTIN', 'EMPTY_GTIN_REASON'].includes(candidate.id))
+          )
+      );
+      const names = deduplicatedMissingRequired.map((attribute) => attribute.name).join(', ');
       pushToast('error', 'Atributos obrigatorios', `Preencha: ${names}`);
       setValidationIssues(
-        missingRequired.map((attribute) => ({
+        deduplicatedMissingRequired.map((attribute) => ({
           code: 'missing_required',
-          message: 'Campo obrigatorio nao preenchido',
+          message:
+            ['GTIN', 'EMPTY_GTIN_REASON'].includes(attribute.id)
+              ? 'Preencha o GTIN ou informe um motivo de GTIN vazio'
+              : 'Campo obrigatorio nao preenchido',
           references: [attribute.name],
         }))
       );
