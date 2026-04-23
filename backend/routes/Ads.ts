@@ -237,6 +237,11 @@ const buildPublicationPayload = (body: Request['body']) => {
       typeof body.condition === 'string' && body.condition.trim() ? body.condition.trim() : 'new',
     pictures: toPictureArray(body.pictures),
     attributes: normalizeAttributesInput(body.attributes),
+    // FORÇA O MERCADO ENVIOS (ME2) PARA CORRIGIR O ERRO DE SHIPPING
+    shipping: {
+      mode: 'me2',
+      local_pick_up: false, // Pode mudar para true se quiser permitir retirar em mãos
+    },
   };
 };
 
