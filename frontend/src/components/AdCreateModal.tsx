@@ -33,7 +33,7 @@ type AdCreateModalProps = {
 
 const getAttributePlaceholder = (attribute: CategoryAttribute): string => {
   if (attribute.values.length > 0) {
-    return 'Selecione um valor';
+    return 'Selecione ou digite um valor';
   }
 
   if (attribute.value_type === 'number' || attribute.value_type === 'number_unit') {
@@ -99,16 +99,26 @@ function renderAttributeInput(
     );
   }
 
+  // AQUI OCORREU A MUDANÇA: Substituído o <select> restrito por um <input> com <datalist>
   if (attribute.values.length > 0 && attribute.values.length <= 100) {
+    const listId = `datalist-${attribute.id}`;
     return (
-      <select value={currentValue} onChange={(event) => onAttributeChange(attribute.id, event.target.value)}>
-        <option value="">{getAttributePlaceholder(attribute)}</option>
-        {attribute.values.map((value) => (
-          <option key={value.id || value.name} value={value.id || value.name}>
-            {value.name}
-          </option>
-        ))}
-      </select>
+      <div style={{ position: 'relative', width: '100%' }}>
+        <input
+          list={listId}
+          type="text"
+          value={currentValue}
+          onChange={(event) => onAttributeChange(attribute.id, event.target.value)}
+          placeholder={getAttributePlaceholder(attribute)}
+          maxLength={attribute.value_max_length ?? undefined}
+          autoComplete="off"
+        />
+        <datalist id={listId}>
+          {attribute.values.map((value) => (
+            <option key={value.id || value.name} value={value.name} />
+          ))}
+        </datalist>
+      </div>
     );
   }
 
