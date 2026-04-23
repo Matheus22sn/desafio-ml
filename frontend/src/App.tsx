@@ -72,6 +72,7 @@ const dateFormatter = new Intl.DateTimeFormat('pt-BR', {
   dateStyle: 'short',
   timeStyle: 'short',
 });
+const SYNC_REQUEST_TIMEOUT_MS = 120_000;
 
 const formatDateTime = (value?: string): string => {
   if (!value) {
@@ -277,7 +278,9 @@ function App() {
     setIsSyncing(true);
 
     try {
-      const response = await api.post<AdsResponse>('/ads/sync');
+      const response = await api.post<AdsResponse>('/ads/sync', undefined, {
+        timeout: SYNC_REQUEST_TIMEOUT_MS,
+      });
       setAds(response.data.items);
       setSummary(response.data.summary);
       setLastSyncedAt(response.data.syncedAt ?? new Date().toISOString());
@@ -687,7 +690,9 @@ function App() {
       setIsSyncing(true);
 
       try {
-        const response = await api.post<AdsResponse>('/ads/sync');
+        const response = await api.post<AdsResponse>('/ads/sync', undefined, {
+          timeout: SYNC_REQUEST_TIMEOUT_MS,
+        });
         setAds(response.data.items);
         setSummary(response.data.summary);
         setLastSyncedAt(response.data.syncedAt ?? new Date().toISOString());

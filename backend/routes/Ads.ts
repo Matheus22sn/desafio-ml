@@ -67,6 +67,18 @@ type PersistRemoteItemOptions = {
   source: 'sync' | 'create' | 'update';
 };
 
+const SYNC_BATCH_SIZE = 20;
+
+const chunkArray = <T,>(items: T[], size: number): T[][] => {
+  const batches: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    batches.push(items.slice(index, index + size));
+  }
+
+  return batches;
+};
+
 const parseText = (value: unknown, fieldName: string): string => {
   if (typeof value !== 'string' || !value.trim()) {
     throw new HttpError(400, `Field "${fieldName}" is required.`);
@@ -387,14 +399,20 @@ const syncSellerAds = async (sellerUserId: string) => {
   const syncedAt = new Date();
 
   if (ids.length > 0) {
-    const detailedItems = await mercadoLivreRequest<Array<{ code: number; body?: MercadoLivreItem; error?: string }>>({
-      method: 'GET',
-      url: '/items',
-      params: {
-        ids: ids.join(','),
-      },
-      userId: sellerUserId,
-    });
+    const idBatches = chunkArray(ids, SYNC_BATCH_SIZE);
+    const detailedItemsChunks = await Promise.all(
+      idBatches.map((batch) =>
+        mercadoLivreRequest<Array<{ code: number; body?: MercadoLivreItem; error?: string }>>({
+          method: 'GET',
+          url: '/items',
+          params: {
+            ids: batch.join(','),
+          },
+          userId: sellerUserId,
+        })
+      )
+    );
+    const detailedItems = detailedItemsChunks.flat();
 
     const persistenceQueue = detailedItems.map(async (entry) => {
       if (entry.code !== 200 || !entry.body?.id) {
