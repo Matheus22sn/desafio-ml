@@ -650,6 +650,52 @@ router.get('/category-context', async (req: Request, res: Response) => {
       }),
     ]);
 
+    const mappedAttributes = attributesResponse.map((attribute) => {
+      const isGtinOrReason = attribute.id === 'GTIN' || attribute.id === 'EMPTY_GTIN_REASON';
+      const isRequired = Boolean(attribute.tags?.required || attribute.tags?.catalog_required) || isGtinOrReason;
+
+      return {
+        id: attribute.id,
+        name: attribute.name,
+        value_type: attribute.value_type ?? 'string',
+        value_max_length: attribute.value_max_length ?? null,
+        tooltip: attribute.tooltip ?? '',
+        attribute_group_id: attribute.attribute_group_id ?? '',
+        attribute_group_name: attribute.attribute_group_name ?? '',
+        required: isRequired,
+        hidden: Boolean(attribute.tags?.hidden) && !isGtinOrReason,
+        fixed: Boolean(attribute.tags?.fixed),
+        values: (attribute.values ?? []).map((value) => ({
+          id: value.id ?? '',
+          name: value.name ?? '',
+        })),
+        allowed_units: (attribute.allowed_units ?? []).map((unit) => ({
+          id: unit.id ?? '',
+          name: unit.name ?? '',
+        })),
+        default_unit: attribute.default_unit ?? '',
+      };
+    });
+
+    // INJEÇÃO MANUAL DO GTIN: Se o ML cobrar o GTIN mas não enviar na lista, nós criamos!
+    if (!mappedAttributes.find((attr) => attr.id === 'GTIN')) {
+      mappedAttributes.unshift({
+        id: 'GTIN',
+        name: 'Código de Barras (GTIN/EAN)',
+        value_type: 'string',
+        value_max_length: 14,
+        tooltip: 'Obrigatório para produtos novos (ex: 4719331811828)',
+        attribute_group_id: '',
+        attribute_group_name: '',
+        required: true,
+        hidden: false,
+        fixed: false,
+        values: [],
+        allowed_units: [],
+        default_unit: '',
+      });
+    }
+
     res.json({
       category: {
         id: categoryResponse.id,
@@ -657,39 +703,14 @@ router.get('/category-context', async (req: Request, res: Response) => {
         path_from_root: categoryResponse.path_from_root ?? [],
       },
       listingTypes: listingTypesResponse.available ?? [],
-      attributes: attributesResponse.map((attribute) => {
-        // FORÇA o GTIN e o EMPTY_GTIN_REASON a aparecerem
-        const isGtinOrReason = attribute.id === 'GTIN' || attribute.id === 'EMPTY_GTIN_REASON';
-        const isRequired = Boolean(attribute.tags?.required || attribute.tags?.catalog_required) || isGtinOrReason;
-
-        return {
-          id: attribute.id,
-          name: attribute.name,
-          value_type: attribute.value_type ?? 'string',
-          value_max_length: attribute.value_max_length ?? null,
-          tooltip: attribute.tooltip ?? '',
-          attribute_group_id: attribute.attribute_group_id ?? '',
-          attribute_group_name: attribute.attribute_group_name ?? '',
-          required: isRequired, // Aplica a regra de obrigatoriedade
-          hidden: Boolean(attribute.tags?.hidden) && !isGtinOrReason, // Garante que não ficam ocultos
-          fixed: Boolean(attribute.tags?.fixed),
-          values: (attribute.values ?? []).map((value) => ({
-            id: value.id ?? '',
-            name: value.name ?? '',
-          })),
-          allowed_units: (attribute.allowed_units ?? []).map((unit) => ({
-            id: unit.id ?? '',
-            name: unit.name ?? '',
-          })),
-          default_unit: attribute.default_unit ?? '',
-        };
-      }),
+      attributes: mappedAttributes,
     });
   } catch (error) {
     const httpError = toHttpError(error, 'Failed to load the category context.');
     res.status(httpError.status).json({ error: httpError.message, details: httpError.details });
   }
 });
+
 router.get('/listing-types', async (req: Request, res: Response) => {
   const categoryId = typeof req.query.category_id === 'string' ? req.query.category_id.trim() : '';
 
