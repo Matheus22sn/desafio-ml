@@ -45,6 +45,28 @@ Fluxos disponiveis:
 - Banco: MongoDB
 - Deploy: Vercel + Render + MongoDB Atlas
 
+## Tecnologias e praticas utilizadas
+
+Este projeto utiliza tecnologias e praticas alinhadas a um cenario real de aplicacao full stack:
+
+- Node.js e Express para API REST
+- React, Vite e TypeScript no frontend
+- MongoDB para persistencia local
+- Docker Compose para padronizar o MongoDB no ambiente local
+- OAuth 2.0 com Mercado Livre
+- integracao com API REST externa
+- Axios para comunicacao HTTP
+- deploy em Vercel, Render e MongoDB Atlas
+- organizacao por camadas (`routes`, `lib`, `models`, `components`)
+- validacao local e remota de payload
+- retry para falhas transientes na API externa
+- refresh automatico de token OAuth
+- sessao isolada por navegador
+- persistencia local com sincronizacao de dados remotos
+- deteccao basica de divergencia entre cache local e marketplace
+- optimistic locking basico na edicao
+- documentacao de arquitetura, endpoints e roteiro de apresentacao
+
 ## Arquitetura
 
 O sistema e dividido em tres camadas:
@@ -334,6 +356,57 @@ Frontend local:
 ```text
 http://localhost:5173
 ```
+
+## Uso de Docker
+
+Docker foi usado neste projeto apenas para padronizar o banco de dados no ambiente local.
+
+Arquivo utilizado:
+
+- [docker-compose.yml](/Z:/desafio-ml/docker-compose.yml)
+
+O `docker compose` sobe um container MongoDB para desenvolvimento:
+
+```bash
+docker compose up -d
+```
+
+Com isso, o backend pode usar localmente:
+
+```text
+mongodb://localhost:27017/desafio_ml
+```
+
+### O que esta em Docker
+
+- MongoDB local de desenvolvimento
+
+### O que nao esta em Docker
+
+- frontend
+- backend
+- deploy de producao
+
+### Motivo da escolha
+
+Essa abordagem reduz a complexidade do ambiente local sem acoplar toda a aplicacao a containers.
+
+Na pratica:
+
+- Docker simplifica o setup do banco
+- o backend roda localmente com `npm run dev`
+- o frontend roda localmente com `npm run dev`
+- em producao, a aplicacao usa Vercel, Render e MongoDB Atlas
+
+### Como explicar isso na avaliacao
+
+Foi adotado `Docker Compose` para padronizar o MongoDB local e evitar dependencia de instalacao manual do banco na maquina do avaliador ou desenvolvedor.
+
+O deploy de producao nao depende de Docker porque a arquitetura publicada usa servicos gerenciados:
+
+- frontend em Vercel
+- backend em Render
+- banco em MongoDB Atlas
 
 ## Scripts disponiveis
 
