@@ -105,6 +105,19 @@ export interface ValidationResponse {
   error?: string;
 }
 
+export interface SyncJobResponse {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  startedAt?: string;
+  finishedAt?: string;
+  syncedAt?: string;
+  totalItems: number;
+  totalBatches: number;
+  processedBatches: number;
+  warnings: string[];
+  error?: string;
+  summary?: AdsSummary;
+}
+
 export interface SellerProfile {
   id: number;
   nickname: string;

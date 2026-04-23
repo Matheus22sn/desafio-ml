@@ -388,6 +388,43 @@ function App() {
   });
 
   const validateCreateAd = async (showSuccessToast = true) => {
+    // Validação local antes de chamar o backend
+    if (createForm.title.trim().length < 20) {
+      pushToast('error', 'Título muito curto', 'Inclua marca, modelo e características. Ex: "Notebook Dell Inspiron 15 Core i5 8GB"');
+      return false;
+    }
+
+    if (!createForm.category_id.trim()) {
+      pushToast('error', 'Categoria obrigatória', 'Carregue uma categoria antes de validar.');
+      return false;
+    }
+
+    if (!createForm.listing_type_id.trim()) {
+      pushToast('error', 'Tipo de anúncio obrigatório', 'Selecione um tipo de anúncio.');
+      return false;
+    }
+
+    // Checar atributos obrigatórios não preenchidos
+    const missingRequired = categoryAttributes
+      .filter((attr) => attr.required && !attr.fixed)
+      .filter((attr) => {
+        const draft = attributeDrafts[attr.id];
+        return !draft || !draft.value.trim();
+      });
+
+    if (missingRequired.length > 0) {
+      const names = missingRequired.map((a) => a.name).join(', ');
+      pushToast('error', 'Atributos obrigatórios', `Preencha: ${names}`);
+      setValidationIssues(
+        missingRequired.map((a) => ({
+          code: 'missing_required',
+          message: `Campo obrigatório não preenchido`,
+          references: [a.name],
+        }))
+      );
+      return false;
+    }
+
     setIsValidatingCreate(true);
 
     try {
@@ -417,6 +454,7 @@ function App() {
       const isValid = await validateCreateAd(false);
 
       if (!isValid) {
+        setIsSubmittingCreate(false); // adicionado para liberar o botão caso a validação falhe
         return;
       }
 

@@ -67,7 +67,24 @@ type PersistRemoteItemOptions = {
   source: 'sync' | 'create' | 'update';
 };
 
+type SyncJobStatus = 'idle' | 'running' | 'completed' | 'failed';
+
+type SyncJobState = {
+  sellerUserId: string;
+  status: SyncJobStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  syncedAt?: string;
+  totalItems: number;
+  totalBatches: number;
+  processedBatches: number;
+  warnings: string[];
+  error?: string;
+  summary?: ReturnType<typeof buildSummary>;
+};
+
 const SYNC_BATCH_SIZE = 20;
+const syncJobs = new Map<string, SyncJobState>();
 
 const chunkArray = <T,>(items: T[], size: number): T[][] => {
   const batches: T[][] = [];
@@ -400,18 +417,36 @@ const syncSellerAds = async (sellerUserId: string) => {
 
   if (ids.length > 0) {
     const idBatches = chunkArray(ids, SYNC_BATCH_SIZE);
-    const detailedItemsChunks = await Promise.all(
-      idBatches.map((batch) =>
-        mercadoLivreRequest<Array<{ code: number; body?: MercadoLivreItem; error?: string }>>({
+    const runningJob = syncJobs.get(sellerUserId);
+
+    if (runningJob) {
+      runningJob.totalItems = ids.length;
+      runningJob.totalBatches = idBatches.length;
+      syncJobs.set(sellerUserId, runningJob);
+    }
+
+    const detailedItemsChunks: Array<Array<{ code: number; body?: MercadoLivreItem; error?: string }>> = [];
+
+    for (const [batchIndex, batch] of idBatches.entries()) {
+      const detailedItems = await mercadoLivreRequest<Array<{ code: number; body?: MercadoLivreItem; error?: string }>>({
           method: 'GET',
           url: '/items',
           params: {
             ids: batch.join(','),
           },
           userId: sellerUserId,
-        })
-      )
-    );
+        });
+
+      detailedItemsChunks.push(detailedItems);
+
+      const inProgressJob = syncJobs.get(sellerUserId);
+
+      if (inProgressJob) {
+        inProgressJob.processedBatches = batchIndex + 1;
+        syncJobs.set(sellerUserId, inProgressJob);
+      }
+    }
+
     const detailedItems = detailedItemsChunks.flat();
 
     const persistenceQueue = detailedItems.map(async (entry) => {
@@ -452,13 +487,88 @@ const syncSellerAds = async (sellerUserId: string) => {
   };
 };
 
-const handleSync = async (req: Request, res: Response) => {
+const getSyncJobResponse = (sellerUserId: string) => {
+  const currentJob = syncJobs.get(sellerUserId);
+
+  if (!currentJob) {
+    return {
+      sellerUserId,
+      status: 'idle' as SyncJobStatus,
+      totalItems: 0,
+      totalBatches: 0,
+      processedBatches: 0,
+      warnings: [],
+    };
+  }
+
+  return currentJob;
+};
+
+const runSyncJob = async (sellerUserId: string) => {
+  syncJobs.set(sellerUserId, {
+    sellerUserId,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    totalItems: 0,
+    totalBatches: 0,
+    processedBatches: 0,
+    warnings: [],
+  });
+
   try {
-    const session = await requireSession(req);
-    const response = await syncSellerAds(session.seller_user_id);
-    res.json(response);
+    const result = await syncSellerAds(sellerUserId);
+    syncJobs.set(sellerUserId, {
+      sellerUserId,
+      status: 'completed',
+      startedAt: syncJobs.get(sellerUserId)?.startedAt,
+      finishedAt: new Date().toISOString(),
+      syncedAt: result.syncedAt.toISOString(),
+      totalItems: result.items.length,
+      totalBatches: syncJobs.get(sellerUserId)?.totalBatches ?? 0,
+      processedBatches: syncJobs.get(sellerUserId)?.processedBatches ?? 0,
+      warnings: result.warnings,
+      summary: result.summary,
+    });
   } catch (error) {
     const httpError = toHttpError(error, 'Failed to synchronize ads with Mercado Livre.');
+    syncJobs.set(sellerUserId, {
+      sellerUserId,
+      status: 'failed',
+      startedAt: syncJobs.get(sellerUserId)?.startedAt,
+      finishedAt: new Date().toISOString(),
+      totalItems: syncJobs.get(sellerUserId)?.totalItems ?? 0,
+      totalBatches: syncJobs.get(sellerUserId)?.totalBatches ?? 0,
+      processedBatches: syncJobs.get(sellerUserId)?.processedBatches ?? 0,
+      warnings: syncJobs.get(sellerUserId)?.warnings ?? [],
+      error: httpError.message,
+    });
+  }
+};
+
+const startSync = async (req: Request, res: Response) => {
+  try {
+    const session = await requireSession(req);
+    const currentJob = syncJobs.get(session.seller_user_id);
+
+    if (currentJob?.status === 'running') {
+      res.status(202).json(currentJob);
+      return;
+    }
+
+    void runSyncJob(session.seller_user_id);
+    res.status(202).json(getSyncJobResponse(session.seller_user_id));
+  } catch (error) {
+    const httpError = toHttpError(error, 'Failed to synchronize ads with Mercado Livre.');
+    res.status(httpError.status).json({ error: httpError.message, details: httpError.details });
+  }
+};
+
+const getSyncStatus = async (req: Request, res: Response) => {
+  try {
+    const session = await requireSession(req);
+    res.json(getSyncJobResponse(session.seller_user_id));
+  } catch (error) {
+    const httpError = toHttpError(error, 'Failed to load the synchronization status.');
     res.status(httpError.status).json({ error: httpError.message, details: httpError.details });
   }
 };
@@ -473,8 +583,8 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/sync', handleSync);
-router.post('/sync', handleSync);
+router.get('/sync', getSyncStatus);
+router.post('/sync', startSync);
 
 router.get('/category-predictor', async (req: Request, res: Response) => {
   const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
