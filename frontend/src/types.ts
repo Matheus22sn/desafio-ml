@@ -81,6 +81,7 @@ export interface CategoryContextResponse {
     id: string;
     name: string;
     path_from_root: CategoryAttributeOption[];
+    max_title_length?: number;
   };
   listingTypes: ListingType[];
   attributes: CategoryAttribute[];

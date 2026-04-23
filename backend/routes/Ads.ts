@@ -45,6 +45,9 @@ type CategoryDetailsResponse = {
   id: string;
   name: string;
   path_from_root?: Array<{ id: string; name: string }>;
+  settings?: {
+    max_title_length?: number;
+  };
 };
 
 type CategoryPredictionResponse = {
@@ -60,6 +63,16 @@ type ValidationCause = {
   type?: string;
   message?: string;
   references?: string[];
+};
+
+type PublicationAttribute = {
+  id: string;
+  value_id?: string;
+  value_name?: string;
+  value_struct?: {
+    number: number;
+    unit: string;
+  };
 };
 
 type PersistRemoteItemOptions = {
@@ -178,7 +191,7 @@ const normalizeAttributesInput = (value: unknown) => {
         return null;
       }
 
-      const normalized: Record<string, unknown> = {
+      const normalized: PublicationAttribute = {
         id: candidate.id.trim(),
       };
 
@@ -217,7 +230,7 @@ const normalizeAttributesInput = (value: unknown) => {
 
       return normalized;
     })
-    .filter(Boolean);
+    .filter((item): item is PublicationAttribute => Boolean(item));
 
   return attributes.length > 0 ? attributes : undefined;
 };
@@ -244,6 +257,45 @@ const buildPublicationPayload = (body: Request['body']) => {
     },
   };
 };
+
+const ensureHiddenConditionalAttributes = (attributes: ReturnType<typeof normalizeAttributesInput>) => {
+  if (!attributes) {
+    return attributes;
+  }
+
+  const gtinAttribute = attributes.find((attribute) => attribute.id === 'GTIN');
+  const gtinValue =
+    typeof gtinAttribute?.value_name === 'string'
+      ? gtinAttribute.value_name.trim()
+      : typeof gtinAttribute?.value_id === 'string'
+        ? gtinAttribute.value_id.trim()
+        : '';
+
+  const hasGtin = Boolean(gtinValue);
+
+  if (hasGtin) {
+    return attributes.filter((attribute) => attribute.id !== 'EMPTY_GTIN_REASON');
+  }
+
+  const hasEmptyGtinReason = attributes.some((attribute) => attribute.id === 'EMPTY_GTIN_REASON');
+
+  if (hasEmptyGtinReason) {
+    return attributes;
+  }
+
+  return [
+    ...attributes,
+    {
+      id: 'EMPTY_GTIN_REASON',
+      value_name: 'No registrado',
+    },
+  ];
+};
+
+const applyPublicationPayloadDefaults = (payload: ReturnType<typeof buildPublicationPayload>) => ({
+  ...payload,
+  attributes: ensureHiddenConditionalAttributes(payload.attributes),
+});
 
 const buildRemoteStateHash = (item: MercadoLivreItem): string => {
   const normalized = {
@@ -657,7 +709,13 @@ router.get('/category-context', async (req: Request, res: Response) => {
 
     const mappedAttributes = attributesResponse.map((attribute) => {
       const isGtinOrReason = attribute.id === 'GTIN' || attribute.id === 'EMPTY_GTIN_REASON';
-      const isRequired = Boolean(attribute.tags?.required || attribute.tags?.catalog_required) || isGtinOrReason;
+      const isRequired =
+        Boolean(
+          attribute.tags?.required ||
+          attribute.tags?.catalog_required ||
+          attribute.tags?.conditional_required ||
+          attribute.tags?.new_required
+        ) || isGtinOrReason;
 
       return {
         id: attribute.id,
@@ -706,6 +764,7 @@ router.get('/category-context', async (req: Request, res: Response) => {
         id: categoryResponse.id,
         name: categoryResponse.name,
         path_from_root: categoryResponse.path_from_root ?? [],
+        max_title_length: categoryResponse.settings?.max_title_length ?? 60,
       },
       listingTypes: listingTypesResponse.available ?? [],
       attributes: mappedAttributes,
@@ -753,7 +812,7 @@ router.post('/validate', async (req: Request, res: Response) => {
     }>({
       method: 'POST',
       url: '/items/validate',
-      data: payload,
+      data: applyPublicationPayloadDefaults(payload),
       userId: session.seller_user_id,
     });
 
@@ -790,7 +849,7 @@ router.post('/', async (req: Request, res: Response) => {
     const createdItem = await mercadoLivreRequest<MercadoLivreItem>({
       method: 'POST',
       url: '/items',
-      data: payload,
+      data: applyPublicationPayloadDefaults(payload),
       userId: session.seller_user_id,
     });
 

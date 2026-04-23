@@ -73,6 +73,8 @@ const dateFormatter = new Intl.DateTimeFormat('pt-BR', {
   timeStyle: 'short',
 });
 const SYNC_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_TITLE_MIN_LENGTH = 35;
+const DEFAULT_TITLE_MAX_LENGTH = 60;
 
 const formatDateTime = (value?: string): string => {
   if (!value) {
@@ -93,6 +95,121 @@ const buildPicturesPayload = (value: string): string[] => {
     .split('\n')
     .map((item) => item.trim())
     .filter(Boolean);
+};
+
+const normalizeComparableText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const cleanTitleSpacing = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+const titleAttributePriority = (attribute: CategoryAttribute): number => {
+  const normalizedKey = `${normalizeComparableText(attribute.id)} ${normalizeComparableText(attribute.name)}`;
+
+  if (/brand|marca/.test(normalizedKey)) return 1;
+  if (/model|modelo/.test(normalizedKey)) return 2;
+  if (/line|linha/.test(normalizedKey)) return 3;
+  if (/technology|tecnologia|lighting|iluminacao/.test(normalizedKey)) return 4;
+  if (/socket|soquete|base/.test(normalizedKey)) return 5;
+  if (/shape|forma|format/.test(normalizedKey)) return 6;
+  if (/power|potencia|watt|voltage|tensao|voltagem|size|tamanho|capacity|capacidade/.test(normalizedKey)) return 7;
+  if (/color|cor/.test(normalizedKey)) return 8;
+  return 20;
+};
+
+const getResolvedAttributeValue = (
+  attribute: CategoryAttribute,
+  draft: CategoryAttributeDraft | undefined
+): string => {
+  if (attribute.fixed && attribute.values.length > 0) {
+    return attribute.values[0].name.trim();
+  }
+
+  if (!draft?.value.trim()) {
+    return '';
+  }
+
+  const matchedOption = attribute.values.find(
+    (option) => option.id === draft.value || option.name === draft.value
+  );
+  const baseValue = matchedOption?.name || draft.value.trim();
+
+  if (attribute.value_type === 'number_unit') {
+    const matchedUnit = attribute.allowed_units.find(
+      (unit) => unit.id === draft.unit || unit.name === draft.unit
+    );
+    const resolvedUnit = matchedUnit?.name || matchedUnit?.id || draft.unit.trim();
+    return cleanTitleSpacing(`${baseValue} ${resolvedUnit}`);
+  }
+
+  return baseValue;
+};
+
+const buildEffectiveCreateTitle = (
+  baseTitle: string,
+  attributes: CategoryAttribute[],
+  drafts: Record<string, CategoryAttributeDraft>,
+  selectedCategoryPath: string,
+  titleLimit: number
+) => {
+  const normalizedBaseTitle = cleanTitleSpacing(baseTitle);
+  const titleParts = normalizedBaseTitle ? [normalizedBaseTitle] : [];
+  const comparableParts = new Set<string>();
+
+  if (normalizedBaseTitle) {
+    comparableParts.add(normalizeComparableText(normalizedBaseTitle));
+  }
+
+  const relevantAttributes = [...attributes]
+    .filter((attribute) => !['GTIN', 'EMPTY_GTIN_REASON'].includes(attribute.id))
+    .sort((left, right) => titleAttributePriority(left) - titleAttributePriority(right));
+
+  for (const attribute of relevantAttributes) {
+    const resolvedValue = getResolvedAttributeValue(attribute, drafts[attribute.id]);
+    const comparableValue = normalizeComparableText(resolvedValue);
+
+    if (!resolvedValue || !comparableValue || comparableParts.has(comparableValue)) {
+      continue;
+    }
+
+    if (normalizedBaseTitle && normalizeComparableText(normalizedBaseTitle).includes(comparableValue)) {
+      continue;
+    }
+
+    const candidateTitle = cleanTitleSpacing([...titleParts, resolvedValue].join(' '));
+
+    if (candidateTitle.length > titleLimit) {
+      continue;
+    }
+
+    titleParts.push(resolvedValue);
+    comparableParts.add(comparableValue);
+
+    if (candidateTitle.length >= DEFAULT_TITLE_MIN_LENGTH) {
+      break;
+    }
+  }
+
+  const categoryLeaf = selectedCategoryPath
+    .split('>')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .at(-1);
+
+  if (categoryLeaf) {
+    const comparableLeaf = normalizeComparableText(categoryLeaf);
+    const candidateTitle = cleanTitleSpacing([...titleParts, categoryLeaf].join(' '));
+
+    if (comparableLeaf && !comparableParts.has(comparableLeaf) && candidateTitle.length <= titleLimit) {
+      titleParts.push(categoryLeaf);
+    }
+  }
+
+  return cleanTitleSpacing(titleParts.join(' ')).slice(0, titleLimit).trim();
 };
 
 const buildAttributePayload = (
@@ -182,6 +299,7 @@ function App() {
   const [attributeDrafts, setAttributeDrafts] = useState<Record<string, CategoryAttributeDraft>>({});
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
   const [selectedCategoryPath, setSelectedCategoryPath] = useState('');
+  const [categoryTitleLimit, setCategoryTitleLimit] = useState(DEFAULT_TITLE_MAX_LENGTH);
   const [selectedAd, setSelectedAd] = useState<Ad | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -198,6 +316,13 @@ function App() {
   const deferredSearch = useDeferredValue(filters.search.trim());
   const hasAutoSyncedFromAuth = useRef(false);
   const nextToastId = useRef(1);
+  const effectiveCreateTitle = buildEffectiveCreateTitle(
+    createForm.title,
+    categoryAttributes,
+    attributeDrafts,
+    selectedCategoryPath,
+    categoryTitleLimit
+  );
 
   const pushToast = (tone: ToastMessage['tone'], title: string, description?: string) => {
     const toastId = nextToastId.current;
@@ -215,6 +340,7 @@ function App() {
     setAttributeDrafts({});
     setValidationIssues([]);
     setSelectedCategoryPath('');
+    setCategoryTitleLimit(DEFAULT_TITLE_MAX_LENGTH);
   };
 
   const closeCreateModal = () => {
@@ -226,6 +352,7 @@ function App() {
     setAttributeDrafts({});
     setValidationIssues([]);
     setSelectedCategoryPath('');
+    setCategoryTitleLimit(DEFAULT_TITLE_MAX_LENGTH);
   };
 
   const fetchAuthStatus = async () => {
@@ -375,7 +502,7 @@ function App() {
   };
 
   const buildCreatePayload = () => ({
-    title: createForm.title,
+    title: effectiveCreateTitle,
     category_id: createForm.category_id,
     listing_type_id: createForm.listing_type_id,
     price: Number(createForm.price),
@@ -446,12 +573,91 @@ function App() {
     }
   };
 
+  void validateCreateAd;
+
+  const validateCreateAdEnhanced = async (showSuccessToast = true) => {
+    if (effectiveCreateTitle.length < DEFAULT_TITLE_MIN_LENGTH) {
+      pushToast(
+        'error',
+        'Titulo muito curto',
+        `O titulo montado ainda esta fraco para publicar: "${effectiveCreateTitle || 'vazio'}".`
+      );
+      return false;
+    }
+
+    if (!createForm.category_id.trim()) {
+      pushToast('error', 'Categoria obrigatoria', 'Carregue uma categoria antes de validar.');
+      return false;
+    }
+
+    if (!createForm.listing_type_id.trim()) {
+      pushToast('error', 'Tipo de anuncio obrigatorio', 'Selecione um tipo de anuncio.');
+      return false;
+    }
+
+    if (buildPicturesPayload(createForm.pictures).length === 0) {
+      pushToast('error', 'Imagem obrigatoria', 'Adicione pelo menos uma imagem valida antes de publicar.');
+      return false;
+    }
+
+    const missingRequired = categoryAttributes
+      .filter((attr) => attr.required && !attr.fixed)
+      .filter((attr) => {
+        const draft = attributeDrafts[attr.id];
+        return !draft || !draft.value.trim();
+      });
+
+    if (missingRequired.length > 0) {
+      const names = missingRequired.map((attribute) => attribute.name).join(', ');
+      pushToast('error', 'Atributos obrigatorios', `Preencha: ${names}`);
+      setValidationIssues(
+        missingRequired.map((attribute) => ({
+          code: 'missing_required',
+          message: 'Campo obrigatorio nao preenchido',
+          references: [attribute.name],
+        }))
+      );
+      return false;
+    }
+
+    setIsValidatingCreate(true);
+
+    try {
+      const response = await api.post<ValidationResponse>('/ads/validate', buildCreatePayload());
+      setValidationIssues(response.data.issues ?? []);
+
+      if (showSuccessToast) {
+        pushToast('success', 'Payload validado', 'O anuncio passou pela validacao do Mercado Livre.');
+      }
+
+      return true;
+    } catch (error) {
+      const issues = extractValidationIssues(error);
+      const titleIssue = issues.find((issue) => issue.code === 'item.title.minimum_length');
+      setValidationIssues(issues);
+
+      if (titleIssue) {
+        pushToast(
+          'error',
+          'Titulo rejeitado pelo Mercado Livre',
+          `Ajuste o titulo com mais caracteristicas. Titulo enviado: "${effectiveCreateTitle}".`
+        );
+        return false;
+      }
+
+      pushToast('error', 'Falha na validacao', getApiErrorMessage(error));
+      return false;
+    } finally {
+      setIsValidatingCreate(false);
+    }
+  };
+
   const handleCreateAd = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsSubmittingCreate(true);
 
     try {
-      const isValid = await validateCreateAd(false);
+      const isValid = await validateCreateAdEnhanced(false);
 
       if (!isValid) {
         setIsSubmittingCreate(false); // adicionado para liberar o botão caso a validação falhe
@@ -557,6 +763,7 @@ function App() {
       setListingTypes(response.data.listingTypes);
       setCategoryAttributes(response.data.attributes);
       setSelectedCategoryPath(response.data.category.path_from_root.map((item) => item.name).join(' > '));
+      setCategoryTitleLimit(response.data.category.max_title_length ?? DEFAULT_TITLE_MAX_LENGTH);
       setValidationIssues([]);
 
       setAttributeDrafts(
@@ -571,6 +778,17 @@ function App() {
               value: '',
               unit: attribute.default_unit,
             };
+          } else if (attribute.id === 'EMPTY_GTIN_REASON') {
+            const unregisteredOption = attribute.values.find(
+              (option) => normalizeComparableText(option.name) === 'no registrado'
+            );
+
+            if (unregisteredOption) {
+              accumulator[attribute.id] = {
+                value: unregisteredOption.id || unregisteredOption.name,
+                unit: '',
+              };
+            }
           }
 
           return accumulator;
@@ -1146,7 +1364,9 @@ function App() {
         onLoadCategorySuggestions={loadCategorySuggestions}
         onSelectCategory={handleSelectCategorySuggestion}
         onLoadCategoryContext={() => void loadCategoryContext()}
-        onValidate={() => void validateCreateAd(true)}
+        effectiveTitle={effectiveCreateTitle}
+        titleLimit={categoryTitleLimit}
+        onValidate={() => void validateCreateAdEnhanced(true)}
       />
 
       <AdEditModal

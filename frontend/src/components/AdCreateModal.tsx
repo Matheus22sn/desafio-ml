@@ -21,6 +21,8 @@ type AdCreateModalProps = {
   isValidating: boolean;
   isLoadingCategorySuggestions: boolean;
   isLoadingCategoryContext: boolean;
+  effectiveTitle: string;
+  titleLimit: number;
   onClose: () => void;
   onFieldChange: (field: keyof CreateAdFormState, value: string) => void;
   onAttributeChange: (attributeId: string, value: string, unit?: string) => void;
@@ -146,6 +148,8 @@ function AdCreateModal({
   isValidating,
   isLoadingCategorySuggestions,
   isLoadingCategoryContext,
+  effectiveTitle,
+  titleLimit,
   onClose,
   onFieldChange,
   onAttributeChange,
@@ -188,6 +192,7 @@ function AdCreateModal({
                   onChange={(event) => onFieldChange('title', event.target.value)}
                   placeholder="Ex.: Notebook Dell Inspiron 15"
                   required
+                  maxLength={titleLimit}
                 />
                 <button
                   type="button"
@@ -198,6 +203,9 @@ function AdCreateModal({
                   {isLoadingCategorySuggestions ? 'Buscando...' : 'Sugerir categoria'}
                 </button>
               </div>
+              <small className="field__hint">
+                Titulo enviado: {effectiveTitle || 'Nao definido'} ({effectiveTitle.length}/{titleLimit})
+              </small>
             </label>
 
             {categorySuggestions.length > 0 ? (
