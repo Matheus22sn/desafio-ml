@@ -303,10 +303,11 @@ const ensureHiddenConditionalAttributes = (attributes: ReturnType<typeof normali
 };
 
 const resolvePublicationShipping = async (sellerUserId: string, categoryId: string) => {
+  const token = await getValidToken(sellerUserId);
   const [userShippingPreferences, categoryShippingPreferences] = await Promise.all([
     mercadoLivreRequest<UserShippingPreferencesResponse>({
       method: 'GET',
-      url: '/users/me/shipping_preferences',
+      url: `/users/${token.user_id}/shipping_preferences`,
       userId: sellerUserId,
     }),
     mercadoLivreRequest<CategoryShippingPreferencesResponse>({
